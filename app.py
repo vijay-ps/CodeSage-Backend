@@ -1,7 +1,7 @@
 import os
 import shutil
 import uuid
-from fastapi import FastAPI, File, UploadFile ,Request
+from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from PyPDF2 import PdfReader
 import requests
@@ -13,7 +13,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 app = FastAPI()
 
-# Allow Android App to access
+# Allow Android App or Frontend to access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,12 +24,16 @@ app.add_middleware(
 TEMP_DIR = "temp_pdfs"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+
 def extract_text_from_pdf(file_path):
     reader = PdfReader(file_path)
     text = ""
     for page in reader.pages:
-        text += page.extract_text() + "\n"
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\n"
     return text
+
 
 def generate_questions(text):
     headers = {
@@ -44,7 +48,7 @@ def generate_questions(text):
     - 5 ten-mark questions with answers
 
     Text:
-    {text}
+    {text[:8000]}  # Limiting to avoid token overflow
     """
 
     data = {
@@ -64,20 +68,25 @@ def generate_questions(text):
         return res_json["choices"][0]["message"]["content"]
     else:
         return f"Error generating questions: {response.text}"
-@app.get('/')
-def home(request: Request):
-    return jsonify({"message": "CodeSage backend is running successfully!"})
+
+
+@app.get("/")
+async def home(request: Request):
+    return {"message": "CodeSage backend is running successfully!"}
+
+
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
     temp_path = os.path.join(TEMP_DIR, f"{file_id}_{file.filename}")
+
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     try:
         text = extract_text_from_pdf(temp_path)
         questions = generate_questions(text)
-        return {"questions": questions}
+        return {"filename": file.filename, "questions": questions}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
