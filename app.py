@@ -1,14 +1,17 @@
 import os
 import shutil
 import uuid
-from fastapi import FastAPI, File, UploadFile, HTTPException , Request
+import asyncio
+import aiofiles
+import requests
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PyPDF2 import PdfReader
-import httpx
 from dotenv import load_dotenv
-import asyncio
+from typing import Optional
 
 load_dotenv()
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 app = FastAPI()
@@ -24,14 +27,21 @@ app.add_middleware(
 TEMP_DIR = "temp_pdfs"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-def extract_text_from_pdf(file_path: str) -> str:
+
+@app.get("/")
+def home():
+    return {"message": "CodeSage backend is running successfully!"}
+
+
+async def extract_text_from_pdf(file_path: str) -> str:
     reader = PdfReader(file_path)
     text = ""
     for page in reader.pages:
         text += page.extract_text() + "\n"
     return text
 
-async def generate_questions_async(text: str) -> str:
+
+async def generate_questions(text: str, timeout: Optional[int] = 30) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -53,41 +63,38 @@ async def generate_questions_async(text: str) -> str:
         "temperature": 0.7
     }
 
-    # Async HTTP request with timeout
-    async with httpx.AsyncClient(timeout=300) as client:  # 5 minutes timeout
-        response = await client.post(
+    try:
+        # Run blocking requests.post in a thread to avoid blocking event loop
+        response = await asyncio.to_thread(
+            requests.post,
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
-            json=data
+            json=data,
+            timeout=timeout
         )
-
-    if response.status_code == 200:
+        response.raise_for_status()
         res_json = response.json()
         return res_json["choices"][0]["message"]["content"]
-    else:
-        raise HTTPException(status_code=response.status_code,
-                            detail=f"Error generating questions: {response.text}")
-
-@app.get("/")
-async def home(request: Request):
-    return {"message": "CodeSage backend is running successfully!"}
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=408, detail="Request to OpenRouter API timed out")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Error generating questions: {e}")
 
 
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
-    # Save the uploaded PDF temporarily
     file_id = str(uuid.uuid4())
     temp_path = os.path.join(TEMP_DIR, f"{file_id}_{file.filename}")
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+
+    # Async write uploaded file to temp directory
+    async with aiofiles.open(temp_path, "wb") as out_file:
+        while content := await file.read(1024):  # read in chunks
+            await out_file.write(content)
 
     try:
-        # Extract text from PDF
-        text = await asyncio.to_thread(extract_text_from_pdf, temp_path)
-        # Generate questions asynchronously
-        questions = await generate_questions_async(text)
-        return {"filename": file.filename, "questions": questions}
+        text = await extract_text_from_pdf(temp_path)
+        questions = await generate_questions(text)
+        return {"questions": questions, "filename": file.filename}
     finally:
-        # Clean up temporary file
         if os.path.exists(temp_path):
             os.remove(temp_path)
