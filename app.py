@@ -68,6 +68,11 @@ async def generate_questions_async(text: str) -> str:
         raise HTTPException(status_code=response.status_code,
                             detail=f"Error generating questions: {response.text}")
 
+@app.get("/")
+async def home(request: Request):
+    return {"message": "CodeSage backend is running successfully!"}
+
+
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     # Save the uploaded PDF temporarily
