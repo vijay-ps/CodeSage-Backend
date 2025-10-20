@@ -64,7 +64,9 @@ def generate_questions(text):
         return res_json["choices"][0]["message"]["content"]
     else:
         return f"Error generating questions: {response.text}"
-
+@app.route('/')
+def home():
+    return jsonify({"message": "CodeSage backend is running successfully!"})
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
